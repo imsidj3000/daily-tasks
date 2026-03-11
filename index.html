@@ -53,24 +53,31 @@
       display: flex; align-items: center; justify-content: center;
     }
     .add-btn:active { opacity: 0.7; transform: scale(0.95); }
-    .add-options {
-      display: flex; flex-wrap: wrap; gap: 8px;
-      padding: 0 16px 14px; align-items: center;
+    .priority-hint { font-size: 12px; color: var(--text3); padding: 0 16px 12px; text-align: right; }
+    .reminder-row {
+      display: none; align-items: center; gap: 8px;
+      padding: 10px 12px 0; flex-wrap: wrap;
     }
-    .reminder-toggle {
-      display: flex; align-items: center; gap: 6px;
-      background: var(--card); border: none; border-radius: 10px;
-      padding: 9px 14px; color: var(--text3); font-size: 14px; cursor: pointer;
-      white-space: nowrap;
+    .reminder-row.show { display: flex; }
+    .reminder-row input[type="time"] {
+      background: var(--card2); border: none; border-radius: 8px;
+      padding: 6px 10px; color: var(--text); font-size: 13px;
+      color-scheme: dark; flex: 1;
     }
-    .reminder-toggle.active { background: rgba(10,132,255,.2); color: var(--accent); }
-    .reminder-time-input {
-      background: var(--card); border: none; border-radius: 10px;
-      padding: 9px 12px; color: var(--text); font-size: 14px;
-      color-scheme: dark; display: none;
+    .reminder-row .set-btn {
+      background: var(--accent); border: none; border-radius: 8px;
+      padding: 6px 14px; color: #fff; font-size: 13px; font-weight: 600; cursor: pointer;
     }
-    .reminder-time-input.show { display: block; }
-    .priority-hint { font-size: 12px; color: var(--text3); margin-left: auto; }
+    .reminder-row .clear-btn {
+      background: none; border: none; color: var(--text3);
+      font-size: 13px; cursor: pointer; padding: 6px;
+    }
+    .reminder-chip {
+      font-size: 11px; color: var(--accent);
+      background: rgba(10,132,255,.15); border-radius: 20px;
+      padding: 2px 8px; cursor: pointer;
+    }
+    .reminder-chip.sent { color: var(--text3); background: rgba(255,255,255,.08); }
 
     /* Task list */
     .task-list { padding: 0 16px; display: flex; flex-direction: column; gap: 8px; }
@@ -186,11 +193,7 @@
     <button class="priority-btn" id="priorityBtn" onclick="cyclePriority()">⚪</button>
     <button class="add-btn" onclick="addTask()">+</button>
   </div>
-  <div class="add-options">
-    <button class="reminder-toggle" id="reminderToggle" onclick="toggleReminder()">⏰ Remind me</button>
-    <input type="time" class="reminder-time-input" id="reminderTime">
-    <div class="priority-hint" id="priorityHint">Tap ⚪ to set priority</div>
-  </div>
+  <div class="priority-hint" id="priorityHint">Tap ⚪ to set priority</div>
 
   <div id="taskList" class="task-list"></div>
   <div class="empty" id="emptyState" style="display:none">
@@ -250,24 +253,48 @@
     if (e.key === "Enter" && document.activeElement === document.getElementById("taskInput")) addTask();
   });
 
-  function toggleReminder() {
-    reminderOn = !reminderOn;
-    const btn = document.getElementById("reminderToggle");
-    const input = document.getElementById("reminderTime");
-    btn.classList.toggle("active", reminderOn);
-    input.classList.toggle("show", reminderOn);
-    if (reminderOn && !input.value) {
-      // Default to 1 hour from now
-      const d = new Date(Date.now() + 3600000);
-      input.value = `${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`;
+  function toggleReminderRow(id) {
+    const row = document.getElementById(`rrow-${id}`);
+    const isShowing = row.classList.contains("show");
+    // Close all open rows first
+    document.querySelectorAll(".reminder-row.show").forEach(r => r.classList.remove("show"));
+    if (!isShowing) {
+      row.classList.add("show");
+      const input = document.getElementById(`rtime-${id}`);
+      if (!input.value) {
+        const d = new Date(Date.now() + 3600000);
+        input.value = `${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`;
+      }
     }
+  }
+
+  function setReminder(id) {
+    const input = document.getElementById(`rtime-${id}`);
+    if (!input.value) return;
+    const task = tasks.find(t => t.id === id);
+    if (!task) return;
+    task.reminder = getReminderISO(input.value);
+    task.reminder_sent = false;
+    render();
+    scheduleSave();
+    showToast("Reminder set ✓");
+  }
+
+  function clearReminder(id) {
+    const task = tasks.find(t => t.id === id);
+    if (!task) return;
+    task.reminder = null;
+    task.reminder_sent = false;
+    render();
+    scheduleSave();
+    showToast("Reminder removed");
   }
 
   function getReminderISO(timeStr) {
     const [h, m] = timeStr.split(":").map(Number);
     const now = new Date();
     const dt = new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m);
-    if (dt <= now) dt.setDate(dt.getDate() + 1); // if past, schedule tomorrow
+    if (dt <= now) dt.setDate(dt.getDate() + 1);
     return dt.toISOString().slice(0, 16);
   }
 
@@ -306,16 +333,23 @@
       const div = document.createElement("div");
       div.className = "task-item";
       div.dataset.id = t.id;
-      const reminderLabel = t.reminder && !t.reminder_sent
-        ? `<span style="font-size:11px;color:#8e8e93;margin-left:6px">⏰ ${formatReminder(t.reminder)}</span>` : "";
+      const hasReminder = t.reminder && !t.reminder_sent;
+      const reminderChip = hasReminder
+        ? `<span class="reminder-chip" onclick="toggleReminderRow('${t.id}')">⏰ ${formatReminder(t.reminder)}</span>`
+        : `<span class="reminder-chip" style="background:none;color:var(--text3)" onclick="toggleReminderRow('${t.id}')">⏰ Set reminder</span>`;
       div.innerHTML = `
         <div class="priority-bar ${p}"></div>
         <span class="drag-handle">⠿</span>
         <div class="task-content">
           <div class="task-text">${escHtml(t.text)}</div>
-          <div style="display:flex;align-items:center;flex-wrap:wrap;gap:4px;margin-top:4px">
+          <div style="display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-top:5px">
             <span class="priority-badge ${p}">${PRIORITY[p]?.label || ""}</span>
-            ${reminderLabel}
+            ${reminderChip}
+          </div>
+          <div class="reminder-row" id="rrow-${t.id}">
+            <input type="time" id="rtime-${t.id}" value="${t.reminder ? t.reminder.slice(11,16) : ""}">
+            <button class="set-btn" onclick="setReminder('${t.id}')">Set</button>
+            ${t.reminder ? `<button class="clear-btn" onclick="clearReminder('${t.id}')">Remove</button>` : ""}
           </div>
         </div>
         <button class="del-btn" onclick="deleteTask('${t.id}',this)">×</button>
@@ -340,17 +374,11 @@
     const input = document.getElementById("taskInput");
     const text = input.value.trim();
     if (!text) return;
-    const timeInput = document.getElementById("reminderTime");
-    const reminder = reminderOn && timeInput.value ? getReminderISO(timeInput.value) : null;
-    tasks.push({ id: uid(), text, priority: currentPriority, reminder, reminder_sent: false });
+    tasks.push({ id: uid(), text, priority: currentPriority, reminder: null, reminder_sent: false });
     input.value = "";
     currentPriority = "none";
-    reminderOn = false;
     document.getElementById("priorityBtn").textContent = "⚪";
     document.getElementById("priorityHint").textContent = "Tap ⚪ to set priority";
-    document.getElementById("reminderToggle").classList.remove("active");
-    document.getElementById("reminderTime").classList.remove("show");
-    document.getElementById("reminderTime").value = "";
     render();
     scheduleSave();
   }
