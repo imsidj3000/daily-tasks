@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Today's Tasks</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0a0a0a;
+      color: #fff;
+      min-height: 100vh;
+      padding: 20px 16px 40px;
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 24px;
+      padding-top: 12px;
+    }
+    header h1 { font-size: 22px; font-weight: 700; }
+    header .date { font-size: 13px; color: #888; }
+    .add-box { display: flex; gap: 8px; margin-bottom: 24px; }
+    .add-box input {
+      flex: 1;
+      background: #1c1c1e;
+      border: 1px solid #333;
+      border-radius: 12px;
+      padding: 14px 16px;
+      font-size: 16px;
+      color: #fff;
+      outline: none;
+    }
+    .add-box input::placeholder { color: #555; }
+    .add-box input:focus { border-color: #555; }
+    .add-box button {
+      background: #fff;
+      color: #000;
+      border: none;
+      border-radius: 12px;
+      padding: 14px 20px;
+      font-size: 20px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .task-list { display: flex; flex-direction: column; gap: 10px; }
+    .task-item {
+      background: #1c1c1e;
+      border-radius: 12px;
+      padding: 16px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      animation: fadeIn 0.2s ease;
+    }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; } }
+    .task-item .num { font-size: 13px; color: #555; min-width: 20px; text-align: right; }
+    .task-item .text { flex: 1; font-size: 16px; line-height: 1.4; color: #f0f0f0; }
+    .task-item .del {
+      background: none; border: none; color: #555;
+      font-size: 22px; cursor: pointer; padding: 4px 8px; border-radius: 8px;
+    }
+    .task-item .del:active { color: #ff453a; }
+    .empty { text-align: center; color: #444; font-size: 15px; padding: 40px 0; }
+    .status { text-align: center; font-size: 12px; color: #444; margin-top: 20px; min-height: 16px; }
+    .status.saving { color: #888; }
+    .status.saved { color: #30d158; }
+    .status.error { color: #ff453a; }
+
+    /* Setup screen */
+    #setupScreen {
+      position: fixed; inset: 0; background: #0a0a0a;
+      display: flex; flex-direction: column;
+      justify-content: center; align-items: center;
+      padding: 32px; gap: 16px;
+    }
+    #setupScreen h2 { font-size: 20px; font-weight: 700; text-align: center; }
+    #setupScreen p { font-size: 14px; color: #888; text-align: center; line-height: 1.5; }
+    #setupScreen input {
+      width: 100%;
+      background: #1c1c1e; border: 1px solid #333;
+      border-radius: 12px; padding: 14px 16px;
+      font-size: 15px; color: #fff; outline: none;
+    }
+    #setupScreen button {
+      width: 100%; background: #fff; color: #000;
+      border: none; border-radius: 12px;
+      padding: 16px; font-size: 16px; font-weight: 600; cursor: pointer;
+    }
+    #setupScreen .err { color: #ff453a; font-size: 13px; min-height: 16px; }
+  </style>
+</head>
+<body>
+
+<!-- Setup screen (shown on first launch) -->
+<div id="setupScreen">
+  <h2>Welcome to Daily Tasks</h2>
+  <p>Enter your GitHub token to get started.<br>It's saved only on this device.</p>
+  <input type="password" id="tokenInput" placeholder="ghp_xxxxxxxxxxxxx">
+  <p class="err" id="setupErr"></p>
+  <button onclick="saveToken()">Continue</button>
+</div>
+
+<!-- Main app -->
+<div id="mainApp" style="display:none">
+  <header>
+    <h1>Today's Tasks</h1>
+    <span class="date" id="dateLabel"></span>
+  </header>
+  <div class="add-box">
+    <input type="text" id="taskInput" placeholder="Add a task..." maxlength="120">
+    <button onclick="addTask()">+</button>
+  </div>
+  <div class="task-list" id="taskList"></div>
+  <p class="empty" id="emptyMsg" style="display:none">No tasks yet.</p>
+  <p class="status" id="status"></p>
+</div>
+
+<script>
+  const GIST_ID = "1fc73de2d2cbff651688cbddc5b82892";
+  const FILE = "tasks.json";
+  let TOKEN = "";
+  let tasks = [];
+  let saveTimer = null;
+
+  // Date label
+  const days = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const now = new Date();
+  const dateEl = document.getElementById("dateLabel");
+  if (dateEl) dateEl.textContent = `${days[now.getDay()]}, ${months[now.getMonth()]} ${now.getDate()}`;
+
+  // Init
+  const saved = localStorage.getItem("gh_token");
+  if (saved) {
+    TOKEN = saved;
+    showMain();
+  }
+
+  async function saveToken() {
+    const t = document.getElementById("tokenInput").value.trim();
+    if (!t) { document.getElementById("setupErr").textContent = "Please enter your token."; return; }
+    document.getElementById("setupErr").textContent = "";
+    // Verify token works
+    try {
+      const r = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
+        headers: { Authorization: `token ${t}` }
+      });
+      if (!r.ok) throw new Error("Invalid token or no access.");
+      localStorage.setItem("gh_token", t);
+      TOKEN = t;
+      showMain();
+    } catch(e) {
+      document.getElementById("setupErr").textContent = e.message;
+    }
+  }
+
+  function showMain() {
+    document.getElementById("setupScreen").style.display = "none";
+    document.getElementById("mainApp").style.display = "block";
+    load();
+  }
+
+  document.addEventListener("keydown", e => {
+    if (e.key === "Enter" && document.getElementById("taskInput") === document.activeElement) addTask();
+  });
+
+  async function load() {
+    setStatus("Loading...", "saving");
+    try {
+      const r = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
+        headers: { Authorization: `token ${TOKEN}` }
+      });
+      const data = await r.json();
+      tasks = JSON.parse(data.files[FILE].content).tasks || [];
+      render();
+      setStatus("", "");
+    } catch(e) {
+      setStatus("Failed to load", "error");
+    }
+  }
+
+  function render() {
+    const list = document.getElementById("taskList");
+    const empty = document.getElementById("emptyMsg");
+    list.innerHTML = "";
+    if (tasks.length === 0) { empty.style.display = "block"; return; }
+    empty.style.display = "none";
+    tasks.forEach((t, i) => {
+      const div = document.createElement("div");
+      div.className = "task-item";
+      div.innerHTML = `
+        <span class="num">${i + 1}</span>
+        <span class="text">${escHtml(t)}</span>
+        <button class="del" onclick="deleteTask(${i})">×</button>
+      `;
+      list.appendChild(div);
+    });
+  }
+
+  function escHtml(s) {
+    return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  }
+
+  function addTask() {
+    const input = document.getElementById("taskInput");
+    const text = input.value.trim();
+    if (!text) return;
+    tasks.push(text);
+    input.value = "";
+    render();
+    scheduleSave();
+  }
+
+  function deleteTask(i) {
+    tasks.splice(i, 1);
+    render();
+    scheduleSave();
+  }
+
+  function scheduleSave() {
+    clearTimeout(saveTimer);
+    setStatus("Saving...", "saving");
+    saveTimer = setTimeout(save, 800);
+  }
+
+  async function save() {
+    try {
+      await fetch(`https://api.github.com/gists/${GIST_ID}`, {
+        method: "PATCH",
+        headers: {
+          Authorization: `token ${TOKEN}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ files: { [FILE]: { content: JSON.stringify({ tasks }) } } })
+      });
+      setStatus("Saved ✓", "saved");
+      setTimeout(() => setStatus("", ""), 2000);
+    } catch(e) {
+      setStatus("Save failed", "error");
+    }
+  }
+
+  function setStatus(msg, cls) {
+    const el = document.getElementById("status");
+    el.textContent = msg;
+    el.className = "status " + cls;
+  }
+</script>
+</body>
+</html>
